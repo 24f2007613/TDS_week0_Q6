@@ -1,4 +1,3 @@
-import os
 import yaml
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,24 +23,17 @@ DEFAULTS = {
 
 # ---------- Layer 2: config.development.yaml ----------
 YAML_TEXT = """
-port: 8279
-debug: true
-log_level: debug
-api_key: key-yx4y9p4ymi
+workers: 6
 """
 
 # ---------- Layer 3: .env file ----------
 ENV_FILE_TEXT = """
-NUM_WORKERS=2
-APP_LOG_LEVEL=error
-APP_API_KEY=key-glhi250vv0
+APP_API_KEY=key-7nbh42ur3z
 """
 
-# ---------- Layer 4: OS env vars ----------
+# ---------- Layer 4: OS env vars (APP_* prefix) ----------
 OS_ENV = {
-    "APP_WORKERS": "14",
-    "APP_LOG_LEVEL": "debug",
-    "APP_API_KEY": "key-k6tp2xcjpt",
+    "APP_WORKERS": "1",
 }
 
 ALIASES = {"NUM_WORKERS": "workers"}
@@ -49,6 +41,7 @@ ALIASES = {"NUM_WORKERS": "workers"}
 
 def normalize_key(name: str) -> str:
     """NUM_WORKERS -> workers, APP_LOG_LEVEL -> log_level"""
+    name = name.strip()
     if name in ALIASES:
         return ALIASES[name]
     if name.startswith("APP_"):
@@ -63,7 +56,7 @@ def parse_env_text(text: str) -> dict:
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, v = line.split("=", 1)
-        result[normalize_key(k.strip())] = v.strip()
+        result[normalize_key(k)] = v.strip().strip('"').strip("'")
     return result
 
 
@@ -78,25 +71,26 @@ def coerce(key: str, value):
 
 
 @app.get("/effective-config")
-def effective_config(set: list[str] = Query(default=[])):
+def effective_config(overrides: list[str] = Query(default=[], alias="set")):
     config = dict(DEFAULTS)                                   # 1. defaults
-    config.update(yaml.safe_load(YAML_TEXT))                  # 2. yaml
+    config.update(yaml.safe_load(YAML_TEXT) or {})            # 2. yaml
     config.update(parse_env_text(ENV_FILE_TEXT))              # 3. .env
     config.update({normalize_key(k): v                        # 4. OS env
                    for k, v in OS_ENV.items()
                    if k.startswith("APP_")})
 
-    # 5. CLI overrides: ?set=port=9000&set=debug=true
-    for item in set:
+    # 5. CLI overrides (highest precedence): ?set=port=9000&set=debug=true
+    for item in overrides:
         if "=" in item:
             k, v = item.split("=", 1)
-            config[normalize_key(k.strip())] = v.strip()
+            if k.strip():
+                config[normalize_key(k)] = v.strip()
 
     # Convert types
     for k in list(config):
         try:
             config[k] = coerce(k, config[k])
-        except ValueError:
+        except (ValueError, TypeError):
             config[k] = DEFAULTS.get(k, config[k])  # ignore bad numbers
 
     config["api_key"] = "****"                                # mask the secret
